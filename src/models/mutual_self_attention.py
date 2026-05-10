@@ -61,9 +61,16 @@ class ReferenceAttentionControl:
         dtype=torch.float16,
         batch_size=1,
         num_images_per_prompt=1,
-        device=torch.device("cuda"),
+        device=None,
         fusion_blocks="midup",
     ):
+        if device is None:
+            if torch.backends.mps.is_available():
+                device = torch.device("mps")
+            elif torch.cuda.is_available():
+                device = torch.device("cuda")
+            else:
+                device = torch.device("cpu")
         MODE = mode
         do_classifier_free_guidance = do_classifier_free_guidance
         attention_auto_machine_weight = attention_auto_machine_weight
