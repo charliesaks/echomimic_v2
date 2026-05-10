@@ -1,0 +1,5 @@
+pretrained_weights/
+
+.venv/
+__pycache__/
+**/__pycache__/
