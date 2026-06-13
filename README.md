@@ -231,6 +231,39 @@ Run the python inference script for accelerated version. Make sure to check out 
 python infer_acc.py --config='./configs/prompts/infer_acc.yaml'
 ```
 
+### Running as a FastAPI server (for Obake)
+
+`server.py` exposes a `POST /generate` endpoint that accepts a portrait image and audio file and returns an animated MP4. Use `start_server.sh` to launch it with safe defaults.
+
+#### CPU mode (recommended on Apple Silicon — stable, no system crashes)
+
+```bash
+./start_server.sh
+```
+
+CPU inference is slower (~5–20 min per clip depending on audio length) but will not crash the machine. The output is 256 × 256 px by default; Obake's ffmpeg pipeline scales it to fit the video frame.
+
+#### MPS mode (Apple Silicon GPU — faster but risks OOM system crash)
+
+Only use MPS if you have 32 GB+ RAM. MPS allocates a large contiguous block of unified memory during inference; on machines with less RAM the kernel will panic.
+
+```bash
+ECHOMIMIC_DEVICE=mps ECHOMIMIC_SIZE=512 ./start_server.sh
+```
+
+#### Tunable environment variables
+
+| Variable | Default | Effect |
+|---|---|---|
+| `ECHOMIMIC_DEVICE` | auto (`mps`/`cpu`) | Force `cpu` or `mps` |
+| `ECHOMIMIC_SIZE` | `256` | Output resolution (px, square). `512` gives better quality; `768` requires ~10 GB RAM |
+| `ECHOMIMIC_MAX_GEN_FRAMES` | `16` | Frames generated per inference pass (clip is looped to fill audio). Lower = less peak memory |
+| `ECHOMIMIC_CONTEXT_FRAMES` | `4` | Sliding-window size. Lower = less memory, similar quality |
+| `ECHOMIMIC_STEPS` | `15` | Denoising steps. `20` gives better quality at the cost of more time |
+| `ECHOMIMIC_FPS` | `24` | Output frame rate |
+
+Set `ECHOMIMIC_BASE_URL=http://localhost:8001` in Obake's `.env.local` (or `.env.docker` for Docker).
+
 ### EMTD Dataset
 Download dataset:
 ```bash

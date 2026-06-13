@@ -16,14 +16,34 @@ import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+# Ensure Homebrew binaries (ffmpeg, etc.) are on PATH — required when the
+# server is launched without a full shell environment (nohup, launchd, etc.).
+_HOMEBREW_BIN = "/opt/homebrew/bin"
+if _HOMEBREW_BIN not in os.environ.get("PATH", ""):
+    os.environ["PATH"] = _HOMEBREW_BIN + ":" + os.environ.get("PATH", "")
+
+import shutil
+
 import numpy as np
 import torch
 from PIL import Image
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import Response
-from moviepy.editor import VideoFileClip, AudioFileClip
 
 ECHOMIMIC_DIR    = Path(__file__).parent
+
+# Resolve ffmpeg once at import time — prefer the system binary on PATH, then
+# common Homebrew locations, so the server works whether launched from a shell
+# with the full PATH or as a bare process (launchd, nohup, etc.).
+def _find_ffmpeg() -> str:
+    if found := shutil.which("ffmpeg"):
+        return found
+    for candidate in ("/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"):
+        if Path(candidate).exists():
+            return candidate
+    raise RuntimeError("ffmpeg not found — install via Homebrew or add it to PATH")
+
+FFMPEG = _find_ffmpeg()
 WEIGHTS_DIR      = ECHOMIMIC_DIR / "pretrained_weights"
 DEFAULT_POSE_DIR = ECHOMIMIC_DIR / "assets" / "halfbody_demo" / "pose" / "01"
 
@@ -42,7 +62,11 @@ def _load_pipeline():
     from src.models.whisper.audio2feature       import load_audio_model
     from src.pipelines.pipeline_echomimicv2_acc import EchoMimicV2Pipeline
 
-    dev   = "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
+    _forced = os.getenv("ECHOMIMIC_DEVICE", "").lower()
+    if _forced in ("cpu", "cuda", "mps"):
+        dev = _forced
+    else:
+        dev = "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
     dtype = torch.float16 if dev in ("cuda", "mps") else torch.float32
 
     infer_config = OmegaConf.load(str(ECHOMIMIC_DIR / "configs" / "inference" / "inference_v2.yaml"))
@@ -155,9 +179,9 @@ async def generate(image: UploadFile = File(...), audio: UploadFile = File(...))
         aud_path.write_bytes(await audio.read())
 
         # EchoMimicV2 requires WAV at 16 kHz mono
-        wav_path = tmp / "speech.wav"
+        wav_path = tmp / "speech_16k.wav"
         subprocess.run(
-            ["ffmpeg", "-y", "-i", str(aud_path), "-ar", "16000", "-ac", "1", str(wav_path)],
+            [FFMPEG, "-y", "-i", str(aud_path), "-ar", "16000", "-ac", "1", str(wav_path)],
             check=True, capture_output=True,
         )
 
@@ -169,8 +193,8 @@ async def generate(image: UploadFile = File(...), audio: UploadFile = File(...))
         # Output size. 512 keeps cross-attention tensors at ~400 MB/layer on MPS;
         # 768 requires ~2 GB/layer and will OOM on most Macs.
         size           = int(os.getenv("ECHOMIMIC_SIZE",            "512"))
-        steps          = int(os.getenv("ECHOMIMIC_STEPS",           "6"))
-        guidance       = float(os.getenv("ECHOMIMIC_GUIDANCE",      "1.0"))
+        steps          = int(os.getenv("ECHOMIMIC_STEPS",           "20"))
+        guidance       = float(os.getenv("ECHOMIMIC_GUIDANCE",      "2.5"))
         ctx_frames     = int(os.getenv("ECHOMIMIC_CONTEXT_FRAMES",  "12"))
         ctx_overlap    = int(os.getenv("ECHOMIMIC_CONTEXT_OVERLAP", "3"))
         w = h          = size
@@ -212,9 +236,11 @@ async def generate(image: UploadFile = File(...), audio: UploadFile = File(...))
         silent_path = str(tmp / "silent.mp4")
         save_videos_grid(video[:, :, :L], silent_path, n_rows=1, fps=fps)
 
-        out_path   = tmp / "output.mp4"
-        audio_clip = AudioFileClip(str(wav_path)).set_duration(L / fps)
-        video_clip = VideoFileClip(silent_path).set_audio(audio_clip)
-        video_clip.write_videofile(str(out_path), codec="libx264", audio_codec="aac", logger=None)
+        out_path = tmp / "output.mp4"
+        subprocess.run(
+            [FFMPEG, "-y", "-i", silent_path, "-i", str(wav_path),
+             "-c:v", "copy", "-c:a", "aac", "-shortest", str(out_path)],
+            check=True, capture_output=True,
+        )
 
         return Response(content=out_path.read_bytes(), media_type="video/mp4")

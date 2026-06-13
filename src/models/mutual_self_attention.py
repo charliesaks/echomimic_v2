@@ -1,4 +1,5 @@
 # Adapted from https://github.com/magic-research/magic-animate/blob/main/magicanimate/models/mutual_self_attention.py
+import os
 from typing import Any, Dict, Optional
 
 import torch
@@ -65,7 +66,10 @@ class ReferenceAttentionControl:
         fusion_blocks="midup",
     ):
         if device is None:
-            if torch.backends.mps.is_available():
+            _forced = os.getenv("ECHOMIMIC_DEVICE", "").lower()
+            if _forced in ("cpu", "cuda", "mps"):
+                device = torch.device(_forced)
+            elif torch.backends.mps.is_available():
                 device = torch.device("mps")
             elif torch.cuda.is_available():
                 device = torch.device("cuda")
@@ -178,7 +182,7 @@ class ReferenceAttentionControl:
                                     [1] * (hidden_states.shape[0] // 2)
                                     + [0] * (hidden_states.shape[0] // 2)
                                 )
-                                .to(device)
+                                .to(norm_hidden_states.device)
                                 .bool()
                             )
                         # print(hidden_states_c.shape, norm_hidden_states.shape, hidden_states.shape, _uc_mask.shape)
